@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#23211C" />
+<link rel="manifest" href="manifest.json" />
+<title>Oppskriftsboka</title>
+<!--
+  Henter Tesseract fra CDN. For FULL offline-bruk: last ned tesseract.min.js,
+  worker.min.js, tesseract-core*.wasm og nor.traineddata, legg dem lokalt,
+  og sett workerPath/corePath/langPath nedenfor + cache dem i service-worker.js.
+-->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  :root {
+    --paper:#E9E5DC; --field:#FBFAF6; --ink:#23211C; --ink-soft:#6E685C;
+    --seal:#B23A2E; --line:#CDC6B8; --good:#3F6B4E;
+    --serif:Georgia,"Iowan Old Style","Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; }
+  body {
+    font-family:var(--sans); color:var(--ink); background:var(--paper);
+    line-height:1.45; overscroll-behavior:none;
+  }
+  .screen { display:none; min-height:100vh; min-height:100dvh; }
+  .screen.active { display:block; }
+
+  /* ---------- header ---------- */
+  header { padding:24px 20px 8px; }
+  .eyebrow { font-size:11px; letter-spacing:.22em; text-transform:uppercase; color:var(--ink-soft); }
+  h1 { font-family:var(--serif); font-weight:600; font-size:30px; margin:2px 0 0; letter-spacing:.01em; }
+
+  /* ---------- stamp button (signature) ---------- */
+  .stamp {
+    appearance:none; border:none; background:transparent; cursor:pointer;
+    width:96px; height:96px; border-radius:50%; position:relative; color:var(--seal);
+    display:grid; place-items:center;
+  }
+  .stamp::before, .stamp::after {
+    content:""; position:absolute; inset:0; border-radius:50%; border:2px solid currentColor;
+  }
+  .stamp::after { inset:8px; border-width:1px; opacity:.55; }
+  .stamp span { font-size:10px; letter-spacing:.16em; text-transform:uppercase; font-weight:600; }
+  .stamp:active { transform:scale(.96); }
+  .stamp:focus-visible { outline:3px solid var(--ink); outline-offset:4px; }
+
+  /* ---------- list / cards ---------- */
+  main { padding:8px 20px 120px; }
+  .empty { color:var(--ink-soft); font-size:15px; padding:32px 4px; border-top:1px solid var(--line); }
+  .card {
+    border-top:1px solid var(--line); padding:16px 4px; display:flex; gap:14px; align-items:baseline;
+    cursor:pointer; width:100%; text-align:left; background:none; border-left:0; border-right:0; border-bottom:0;
+    font:inherit; color:inherit;
+  }
+  .card .no { font-family:var(--serif); color:var(--seal); font-size:14px; min-width:26px; }
+  .card h3 { font-family:var(--serif); font-weight:600; font-size:19px; margin:0; }
+  .card .meta { color:var(--ink-soft); font-size:13px; margin-top:2px; }
+
+  .fab { position:fixed; left:0; right:0; bottom:0; display:grid; place-items:center;
+         padding:20px; background:linear-gradient(transparent,var(--paper) 38%); }
+
+  /* ---------- camera ---------- */
+  #scan { background:#111; position:relative; overflow:hidden; }
+  #video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .guide { position:absolute; inset:0; pointer-events:none; }
+  .guide .mask { position:absolute; inset:0;
+    /* darken outside the frame: frame = 5% sides, 8% top, 5% bottom */
+    background:
+      linear-gradient(#000a,#000a) 0 0/100% 8% no-repeat,
+      linear-gradient(#000a,#000a) 0 100%/100% 5% no-repeat,
+      linear-gradient(#000a,#000a) 0 0/5% 100% no-repeat,
+      linear-gradient(#000a,#000a) 100% 0/5% 100% no-repeat;
+  }
+  .frame { position:absolute; left:5%; right:5%; top:8%; bottom:5%; }
+  .frame .divider { position:absolute; left:50%; top:6%; bottom:6%; width:1px;
+    background:repeating-linear-gradient(#fff6 0 6px,transparent 6px 12px); }
+  .corner { position:absolute; width:26px; height:26px; border:2px solid #fff; }
+  .corner.tl{left:0;top:0;border-right:0;border-bottom:0}
+  .corner.tr{right:0;top:0;border-left:0;border-bottom:0}
+  .corner.bl{left:0;bottom:0;border-right:0;border-top:0}
+  .corner.br{right:0;bottom:0;border-left:0;border-top:0}
+  .hint { position:absolute; left:0; right:0; top:8%; transform:translateY(-130%);
+    text-align:center; color:#fff; font-size:13px; letter-spacing:.02em; text-shadow:0 1px 3px #000; }
+  .cam-bar { position:absolute; left:0; right:0; bottom:0; padding:20px env(safe-area-inset-right) calc(20px + env(safe-area-inset-bottom)) env(safe-area-inset-left);
+    display:flex; align-items:center; justify-content:space-between; }
+  .cam-bar .stamp { color:#fff; }
+  .ghost { appearance:none; background:#0006; color:#fff; border:1px solid #fff5; border-radius:999px;
+    padding:10px 16px; font:inherit; font-size:14px; }
+
+  /* ---------- progress ---------- */
+  #work { display:grid; place-items:center; text-align:center; gap:14px; padding:80px 24px; }
+  .bar { width:min(320px,80vw); height:4px; background:var(--line); border-radius:2px; overflow:hidden; }
+  .bar i { display:block; height:100%; width:0; background:var(--seal); transition:width .2s; }
+
+  /* ---------- result form ---------- */
+  form { padding:8px 20px 140px; }
+  label { display:block; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-soft); margin:18px 0 6px; }
+  input, textarea, select {
+    width:100%; font:inherit; color:var(--ink); background:var(--field);
+    border:1px solid var(--line); border-radius:8px; padding:11px 12px;
+  }
+  input:focus,textarea:focus,select:focus{ outline:2px solid var(--seal); outline-offset:0; border-color:var(--seal); }
+  .title-in { font-family:var(--serif); font-size:24px; padding:8px 12px; }
+  .row { display:flex; gap:12px; } .row > div { flex:1; }
+  .group { border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:10px; background:#fff5; }
+  .group .gname { font-family:var(--serif); font-size:16px; border:0; background:transparent; padding:2px 0; border-bottom:1px dashed var(--line); border-radius:0; }
+  .item, .step { display:flex; gap:8px; margin-top:8px; }
+  .item input, .step textarea { padding:8px 10px; }
+  .step textarea { min-height:46px; resize:vertical; }
+  .x { flex:0 0 auto; width:34px; border:1px solid var(--line); background:var(--field); border-radius:8px; color:var(--ink-soft); font-size:18px; }
+  .add { margin-top:10px; background:none; border:1px dashed var(--line); border-radius:8px; padding:9px; width:100%; color:var(--ink-soft); font:inherit; }
+  .step-no { font-family:var(--serif); color:var(--seal); flex:0 0 auto; width:22px; padding-top:10px; }
+  .actions { position:fixed; left:0; right:0; bottom:0; display:flex; gap:12px; padding:16px 20px calc(16px + env(safe-area-inset-bottom));
+    background:linear-gradient(transparent,var(--paper) 30%); }
+  .btn { flex:1; font:inherit; font-size:16px; border-radius:10px; padding:14px; border:1px solid var(--ink); background:var(--ink); color:var(--paper); }
+  .btn.secondary { background:transparent; color:var(--ink); }
+  .pill { display:inline-block; font-size:12px; color:var(--seal); border:1px solid var(--seal); border-radius:999px; padding:2px 10px; }
+
+  @media (prefers-reduced-motion: reduce){ *{transition:none!important} }
+</style>
+</head>
+<body>
+
+<!-- ============ LIST ============ -->
+<section id="list" class="screen active">
+  <header>
+    <div class="eyebrow">Skannet fra kokebøkene dine</div>
+    <h1>Oppskriftsboka</h1>
+  </header>
+  <main id="cards"></main>
+  <div class="fab">
+    <button class="stamp" id="goScan" aria-label="Skann en side"><span>Skann</span></button>
+  </div>
+</section>
+
+<!-- ============ CAMERA ============ -->
+<section id="scan" class="screen">
+  <video id="video" playsinline muted></video>
+  <div class="guide" aria-hidden="true">
+    <div class="mask"></div>
+    <div class="frame">
+      <div class="divider"></div>
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+    </div>
+    <div class="hint">Hele siden innenfor rammen · rett ovenfra · god belysning</div>
+  </div>
+  <div class="cam-bar">
+    <button class="ghost" id="camCancel">Avbryt</button>
+    <button class="stamp" id="shutter" aria-label="Ta bilde"><span>Ta bilde</span></button>
+    <label class="ghost" style="margin:0">Galleri
+      <input id="file" type="file" accept="image/*" capture="environment" hidden />
+    </label>
+  </div>
+</section>
+
+<!-- ============ WORKING ============ -->
+<section id="work-screen" class="screen">
+  <div id="work">
+    <div class="eyebrow">Leser av siden</div>
+    <div class="bar"><i id="barFill"></i></div>
+    <div id="workMsg" style="color:var(--ink-soft);font-size:14px">Klargjør tekstgjenkjenning …</div>
+  </div>
+</section>
+
+<!-- ============ RESULT ============ -->
+<section id="result" class="screen">
+  <header>
+    <div class="eyebrow">Sjekk og rett · <span class="pill" id="cuisinePill">kjøkken</span></div>
+  </header>
+  <form id="form" onsubmit="return false">
+    <label for="f-title">Rettens navn</label>
+    <input id="f-title" class="title-in" />
+    <div class="row">
+      <div><label for="f-serv">Porsjoner</label><input id="f-serv" /></div>
+      <div><label for="f-time">Tid (min)</label><input id="f-time" inputmode="numeric" /></div>
+    </div>
+    <label for="f-cuisine">Kjøkken</label>
+    <input id="f-cuisine" />
+    <label>Ingredienser</label>
+    <div id="groups"></div>
+    <button type="button" class="add" id="addGroup">+ Ny gruppe</button>
+    <label>Fremgangsmåte</label>
+    <div id="steps"></div>
+    <button type="button" class="add" id="addStep">+ Nytt steg</button>
+  </form>
+  <div class="actions">
+    <button class="btn secondary" id="discard">Forkast</button>
+    <button class="btn" id="save">Lagre</button>
+  </div>
+</section>
+
+<script>
+"use strict";
+/* =========================================================================
+   PARSER  (samme logikk som er enhetstestet i parser.mjs / columns.mjs)
+   ========================================================================= */
+const UNITS_OK = true; // units used only as secondary signal
+const BULLET = /^\s*[\*✱•·◦‣✶✷]+\s*/;
+const STARTS_QTY = /^\s*[\*✱•·◦‣✶✷]?\s*([0-9¼½¾⅓⅔⅛]|[0-9]+\s*\/\s*[0-9]+)/;
+const STEP_START = /^\s*(\d{1,2})[.)]\s+/;
+const CONTINUATION = /^\s*[(a-zæøå]/;
+const CUISINE = {
+  Japansk:["soyasaus","soya","mirin","sake","teriyaki","sashimi","sushi","miso","dashi","nori","edamame","ponzu","wasabi","ramen","sesamolje","riseddik","shiitake","japan"],
+  Italiensk:["pasta","parmesan","basilikum","mozzarella","risotto","pesto","italia"],
+  Indisk:["garam masala","karri","curry","tandoori","ghee","paneer","india"],
+  Meksikansk:["tortilla","taco","salsa","jalapeño","koriander","mexico"],
+};
+const stripBullet = (l)=>l.replace(BULLET,"").trim();
+
+function splitColumns(lines, pageWidth){
+  if(!lines.length) return [[]];
+  const xc = lines.map(l=>(l.x0+l.x1)/2);
+  let c0=Math.min(...xc), c1=Math.max(...xc);
+  for(let it=0;it<20;it++){
+    const g0=[],g1=[];
+    xc.forEach((x,i)=>(Math.abs(x-c0)<=Math.abs(x-c1)?g0:g1).push(i));
+    const m0=g0.length?g0.reduce((s,i)=>s+xc[i],0)/g0.length:c0;
+    const m1=g1.length?g1.reduce((s,i)=>s+xc[i],0)/g1.length:c1;
+    if(m0===c0&&m1===c1)break; c0=m0;c1=m1;
+  }
+  const two=Math.abs(c1-c0)>0.18*pageWidth;
+  const buckets= two?[[],[]]:[[]];
+  lines.forEach((l)=>{const x=(l.x0+l.x1)/2; buckets[two?(Math.abs(x-c0)<=Math.abs(x-c1)?0:1):0].push(l);});
+  const avg=b=>b.reduce((s,l)=>s+(l.x0+l.x1)/2,0)/b.length;
+  return buckets.filter(b=>b.length).sort((a,b)=>avg(a)-avg(b))
+    .map(b=>b.slice().sort((p,q)=>p.y0-q.y0).map(l=>l.text));
+}
+function classify(columns){
+  const scored=columns.map(c=>({lines:c, steps:c.filter(l=>STEP_START.test(l)).length}));
+  scored.sort((a,b)=>b.steps-a.steps);
+  return { steps:scored[0].lines, ingredients:scored.slice(1).flatMap(s=>s.lines) };
+}
+function parseIngredients(lines){
+  const groups=[]; let cur={name:"Hovedingredienser",items:[]}; groups.push(cur);
+  for(const raw of lines){
+    const line=raw.trim(); if(!line) continue;
+    if(BULLET.test(raw)||STARTS_QTY.test(raw)) cur.items.push(stripBullet(line));
+    else if(CONTINUATION.test(line)&&cur.items.length) cur.items[cur.items.length-1]+=" "+line;
+    else { cur={name:line.replace(/:$/,""),items:[]}; groups.push(cur); }
+  }
+  return groups.filter(g=>g.items.length);
+}
+function parseSteps(lines){
+  const steps=[];
+  for(const raw of lines){ const line=raw.trim(); if(!line)continue;
+    if(STEP_START.test(line)) steps.push(line.replace(STEP_START,"").trim());
+    else if(steps.length) steps[steps.length-1]+=" "+line;
+  } return steps;
+}
+function guessCuisine(t){ const h=t.toLowerCase(); let best=null,bs=0;
+  for(const[c,ws]of Object.entries(CUISINE)){const s=ws.reduce((n,w)=>n+(h.includes(w)?1:0),0); if(s>bs){best=c;bs=s;}}
+  return best||"Ukjent";
+}
+function parseRecipe({title,metaLine="",columns}){
+  const {ingredients,steps}=classify(columns);
+  const all=[title,metaLine,...columns.flat()].join("\n");
+  const serv=(metaLine.match(/(\d+(?:\s*[–-]\s*\d+)?)\s*porsjoner/i)||[])[1];
+  const time=(metaLine.match(/(\d+)\s*min/i)||[])[1];
+  return {
+    title:(title||"").trim(),
+    cuisine:guessCuisine(all),
+    servings: serv?serv.replace(/\s/g,""):"",
+    timeMinutes: time||"",
+    ingredientGroups: parseIngredients(ingredients),
+    steps: parseSteps(steps),
+  };
+}
+
+/* =========================================================================
+   OCR  (Tesseract -> lines with bbox) and title/meta extraction
+   ========================================================================= */
+async function ocrToRecipe(canvas, onProgress){
+  const worker = await Tesseract.createWorker("nor", 1, {
+    logger: m => { if(m.status==="recognizing text") onProgress(0.3+0.65*m.progress, "Leser tekst …");
+                   else if(m.status) onProgress(0.15, m.status==="loading language traineddata"?"Laster språkmodell …":"Klargjør …"); }
+  });
+  const { data } = await worker.recognize(canvas);
+  await worker.terminate();
+
+  const W = canvas.width;
+  let lines = (data.lines||[]).map(l=>({
+    text:(l.text||"").replace(/\n/g," ").trim(),
+    x0:l.bbox.x0, x1:l.bbox.x1, y0:l.bbox.y0, y1:l.bbox.y1, h:l.bbox.y1-l.bbox.y0
+  })).filter(l=>l.text);
+
+  if(!lines.length){ // fallback: no bbox -> single column from raw text
+    lines = (data.text||"").split("\n").map((t,i)=>({text:t.trim(),x0:0,x1:W,y0:i,y1:i+1,h:1})).filter(l=>l.text);
+  }
+
+  // title = tallest line in the top third
+  const top = lines.filter(l=>l.y0 < canvas.height*0.33);
+  const titleLine = top.sort((a,b)=>b.h-a.h)[0];
+  const title = titleLine ? titleLine.text : "";
+
+  // meta = first line mentioning porsjoner / min
+  const metaLine = (lines.find(l=>/porsjon|\d+\s*min/i.test(l.text))||{}).text || "";
+
+  const body = lines.filter(l=> l!==titleLine && l.text!==metaLine);
+  const columns = splitColumns(body, W);
+  return parseRecipe({ title, metaLine, columns });
+}
+
+/* =========================================================================
+   APP  (screens, camera, form, IndexedDB)
+   ========================================================================= */
+const $=s=>document.querySelector(s);
+const screens={list:$("#list"),scan:$("#scan"),work:$("#work-screen"),result:$("#result")};
+function show(name){ Object.values(screens).forEach(s=>s.classList.remove("active")); screens[name].classList.add("active"); }
+
+// ---- IndexedDB ----
+let db;
+function openDB(){ return new Promise((res,rej)=>{ const r=indexedDB.open("oppskrifter",1);
+  r.onupgradeneeded=()=>r.result.createObjectStore("r",{keyPath:"id"});
+  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+function putRecipe(o){ return new Promise((res,rej)=>{ const t=db.transaction("r","readwrite"); t.objectStore("r").put(o); t.oncomplete=res; t.onerror=()=>rej(t.error); }); }
+function allRecipes(){ return new Promise((res,rej)=>{ const q=db.transaction("r").objectStore("r").getAll(); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); }
+
+async function renderList(){
+  const items=(await allRecipes()).sort((a,b)=>b.created-a.created);
+  const el=$("#cards");
+  if(!items.length){ el.innerHTML='<div class="empty">Ingen oppskrifter ennå. Trykk på stempelet for å skanne den første siden fra en av bøkene dine.</div>'; return; }
+  el.innerHTML="";
+  items.forEach((r,i)=>{
+    const b=document.createElement("button"); b.className="card";
+    const meta=[r.cuisine, r.servings&&r.servings+" porsj.", r.timeMinutes&&r.timeMinutes+" min"].filter(Boolean).join(" · ");
+    b.innerHTML=`<span class="no">${String(i+1).padStart(2,"0")}</span><span><h3>${esc(r.title||"Uten navn")}</h3><div class="meta">${esc(meta)}</div></span>`;
+    b.onclick=()=>editRecipe(r); el.appendChild(b);
+  });
+}
+const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// ---- Camera ----
+let stream;
+async function startCam(){
+  show("scan");
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});
+    $("#video").srcObject=stream; await $("#video").play();
+  }catch(e){ $("#file").click(); } // fallback to gallery/file picker
+}
+function stopCam(){ if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;} }
+
+function cropToCanvas(srcW,srcH,draw){
+  // crop to the same relative frame as the guide: x 5%–95%, y 8%–95%
+  const x=srcW*0.05, y=srcH*0.08, w=srcW*0.90, h=srcH*0.87;
+  const scale=Math.min(1, 1600/w); // cap width for speed/accuracy
+  const c=document.createElement("canvas"); c.width=Math.round(w*scale); c.height=Math.round(h*scale);
+  const ctx=c.getContext("2d");
+  // light contrast boost helps OCR
+  ctx.filter="grayscale(1) contrast(1.12)";
+  draw(ctx, x,y,w,h, c.width,c.height);
+  return c;
+}
+async function runOCR(canvas){
+  show("work"); setBar(0.05,"Klargjør tekstgjenkjenning …");
+  try{
+    const recipe=await ocrToRecipe(canvas, setBar);
+    openForm(recipe);
+  }catch(e){ setBar(0,"Noe gikk galt under avlesning. Prøv et skarpere bilde."); console.error(e);
+    setTimeout(()=>{show("list");},1800); }
+}
+function setBar(p,msg){ $("#barFill").style.width=Math.round(p*100)+"%"; if(msg)$("#workMsg").textContent=msg; }
+
+// shutter from live video
+$("#shutter").onclick=()=>{
+  const v=$("#video"); if(!v.videoWidth){ $("#file").click(); return; }
+  const c=cropToCanvas(v.videoWidth,v.videoHeight,(ctx,x,y,w,h,cw,ch)=>ctx.drawImage(v,x,y,w,h,0,0,cw,ch));
+  stopCam(); runOCR(c);
+};
+// file/gallery fallback
+$("#file").onchange=(e)=>{
+  const f=e.target.files[0]; if(!f) return;
+  const img=new Image(); img.onload=()=>{ stopCam();
+    const c=cropToCanvas(img.width,img.height,(ctx,x,y,w,h,cw,ch)=>ctx.drawImage(img,x,y,w,h,0,0,cw,ch));
+    runOCR(c);
+  }; img.src=URL.createObjectURL(f);
+};
+$("#camCancel").onclick=()=>{ stopCam(); show("list"); };
+$("#goScan").onclick=startCam;
+
+// ---- Result form ----
+let editing=null;
+function openForm(r){
+  editing = r.id ? r : Object.assign({id:crypto.randomUUID(), created:Date.now()}, r);
+  $("#f-title").value=r.title||""; $("#f-serv").value=r.servings||"";
+  $("#f-time").value=r.timeMinutes||""; $("#f-cuisine").value=r.cuisine||"";
+  $("#cuisinePill").textContent=r.cuisine||"kjøkken";
+  renderGroups(r.ingredientGroups||[]); renderSteps(r.steps||[]);
+  show("result"); window.scrollTo(0,0);
+}
+function editRecipe(r){ openForm(r); }
+
+function groupNode(g){
+  const wrap=document.createElement("div"); wrap.className="group";
+  const name=document.createElement("input"); name.className="gname"; name.value=g.name; wrap.appendChild(name);
+  const items=document.createElement("div");
+  (g.items||[]).forEach(it=>items.appendChild(itemNode(it)));
+  wrap.appendChild(items);
+  const add=document.createElement("button"); add.type="button"; add.className="add"; add.textContent="+ Ingrediens";
+  add.onclick=()=>items.appendChild(itemNode("")); wrap.appendChild(add);
+  return wrap;
+}
+function itemNode(v){
+  const row=document.createElement("div"); row.className="item";
+  const inp=document.createElement("input"); inp.value=v;
+  const x=document.createElement("button"); x.type="button"; x.className="x"; x.textContent="×"; x.onclick=()=>row.remove();
+  row.append(inp,x); return row;
+}
+function stepNode(v,n){
+  const row=document.createElement("div"); row.className="step";
+  const no=document.createElement("div"); no.className="step-no"; no.textContent=n+".";
+  const ta=document.createElement("textarea"); ta.value=v;
+  const x=document.createElement("button"); x.type="button"; x.className="x"; x.textContent="×"; x.onclick=()=>{row.remove();renumber();};
+  row.append(no,ta,x); return row;
+}
+function renderGroups(gs){ const el=$("#groups"); el.innerHTML=""; (gs.length?gs:[{name:"Hovedingredienser",items:[]}]).forEach(g=>el.appendChild(groupNode(g))); }
+function renderSteps(ss){ const el=$("#steps"); el.innerHTML=""; (ss.length?ss:[""]).forEach((s,i)=>el.appendChild(stepNode(s,i+1))); }
+function renumber(){ [...$("#steps").children].forEach((r,i)=>r.querySelector(".step-no").textContent=(i+1)+"."); }
+$("#addGroup").onclick=()=>$("#groups").appendChild(groupNode({name:"Ny gruppe",items:[""]}));
+$("#addStep").onclick=()=>{ $("#steps").appendChild(stepNode("",$("#steps").children.length+1)); };
+$("#discard").onclick=()=>show("list");
+
+$("#save").onclick=async()=>{
+  const groups=[...$("#groups").children].map(g=>({
+    name:g.querySelector(".gname").value.trim()||"Ingredienser",
+    items:[...g.querySelectorAll(".item input")].map(i=>i.value.trim()).filter(Boolean)
+  })).filter(g=>g.items.length);
+  const steps=[...$("#steps").querySelectorAll("textarea")].map(t=>t.value.trim()).filter(Boolean);
+  Object.assign(editing,{
+    title:$("#f-title").value.trim(), servings:$("#f-serv").value.trim(),
+    timeMinutes:$("#f-time").value.trim(), cuisine:$("#f-cuisine").value.trim(),
+    ingredientGroups:groups, steps
+  });
+  await putRecipe(editing); await renderList(); show("list");
+};
+
+// ---- boot ----
+(async()=>{ db=await openDB(); await renderList();
+  if("serviceWorker" in navigator){ try{ await navigator.serviceWorker.register("service-worker.js"); }catch(e){} }
+})();
+</script>
+</body>
+</html>
