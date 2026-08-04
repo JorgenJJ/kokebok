@@ -3,7 +3,7 @@
 // Output: array of columns (left->right), each an array of text lines (top->bottom).
 
 export function splitColumns(lines, pageWidth) {
-  if (lines.length === 0) return [[]];
+  if (!lines || lines.length === 0) return [[]];
   const xc = lines.map((l) => (l.x0 + l.x1) / 2);
 
   // 1D k-means, k=2, init at extremes
@@ -26,10 +26,12 @@ export function splitColumns(lines, pageWidth) {
   lines.forEach((l, i) => buckets[twoCols ? assign(i) : 0].push(l));
 
   // order columns left->right, and lines within a column top->bottom
-  return buckets
+  const cols = buckets
     .filter((b) => b.length)
     .sort((a, b) => avgX(a) - avgX(b))
     .map((b) => b.slice().sort((p, q) => p.y0 - q.y0).map((l) => l.text));
+
+  return cols.length ? cols : [[]];
 }
 
 function avgX(lines) {

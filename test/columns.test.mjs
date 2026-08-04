@@ -1,16 +1,16 @@
-// test-columns.mjs — run with: node test-columns.mjs
-import { splitColumns } from "./columns.mjs";
-import { parseRecipe } from "./parser.mjs";
+// columns.test.mjs — spaltedeling fra bbox-er, portert til node:test.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { splitColumns } from "../js/columns.mjs";
+import { parseRecipe } from "../js/parser.mjs";
 
 const PAGE_W = 1000;
 
-// Build synthetic line-boxes for a page given a left-column and right-column
-// list of text lines, then SHUFFLE them (OCR doesn't guarantee order).
+// Bygg syntetiske linjebokser for en side og STOKK dem (OCR garanterer ikke rekkefølge).
 function makePage(leftLines, rightLines) {
   const boxes = [];
   leftLines.forEach((text, i) => boxes.push({ text, x0: 60, x1: 440, y0: 100 + i * 40, y1: 130 + i * 40 }));
   rightLines.forEach((text, i) => boxes.push({ text, x0: 560, x1: 940, y0: 100 + i * 40, y1: 130 + i * 40 }));
-  // shuffle
   for (let i = boxes.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [boxes[i], boxes[j]] = [boxes[j], boxes[i]];
@@ -18,7 +18,6 @@ function makePage(leftLines, rightLines) {
   return boxes;
 }
 
-// Ramen: ingredients LEFT, steps RIGHT
 const ramenLeft = [
   "* 600 g lårfilet av kylling", "* 3 ss olje til steking", "* 1 ts salt",
   "Kraft", "* 8 tørket shiitakesopp eller", "annen aromatisk sopp", "* 1 ½ dl vann",
@@ -35,7 +34,6 @@ const ramenRight = [
   "5. Sil kraften forsiktig gjennom et dørslag og server.",
 ];
 
-// Sashimi: steps LEFT, ingredients RIGHT (reversed layout!)
 const sashimiLeft = [
   "1. Kutt opp alle ingrediensene til salaten.",
   "2. Bland sammen ingrediensene til ponzusausen.",
@@ -53,32 +51,29 @@ const sashimiRight = [
   "Tilbehør", "* Rekechips", "* Ristede sesamfrø",
 ];
 
-let pass = 0, fail = 0;
-function eq(label, got, want) {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  console.log(`  ${ok ? "✓" : "✗"} ${label}` + (ok ? "" : ` (fikk ${JSON.stringify(got)})`));
-  ok ? pass++ : fail++;
-}
-
-console.log("=== RAMEN: bbox-spalter fra stokket rekkefølge ===");
-{
+test("RAMEN: bbox-spalter fra stokket rekkefølge", () => {
   const cols = splitColumns(makePage(ramenLeft, ramenRight), PAGE_W);
-  eq("antall spalter", cols.length, 2);
+  assert.equal(cols.length, 2, "antall spalter");
   const r = parseRecipe({ title: "RAMEN", metaLine: "4–5 porsjoner 40 min", columns: cols });
-  eq("gruppenavn", r.ingredientGroups.map((g) => g.name), ["Hovedingredienser", "Kraft", "Ramen-egg", "Tilbehør"]);
-  eq("antall steg", r.steps.length, 5);
-  eq("Kraft-antall", r.ingredientGroups.find((g) => g.name === "Kraft").items.length, 8);
-}
+  assert.deepEqual(r.ingredientGroups.map((g) => g.name), ["Hovedingredienser", "Kraft", "Ramen-egg", "Tilbehør"]);
+  assert.equal(r.steps.length, 5, "antall steg");
+  assert.equal(r.ingredientGroups.find((g) => g.name === "Kraft").items.length, 8, "Kraft-antall");
+});
 
-console.log("\n=== SASHIMI: omvendt layout (ingredienser til høyre) ===");
-{
+test("SASHIMI: omvendt layout (ingredienser til høyre)", () => {
   const cols = splitColumns(makePage(sashimiLeft, sashimiRight), PAGE_W);
-  eq("antall spalter", cols.length, 2);
+  assert.equal(cols.length, 2, "antall spalter");
   const r = parseRecipe({ title: "SASHIMISALAT", metaLine: "3–4 porsjoner 15 min", columns: cols });
-  eq("gruppenavn", r.ingredientGroups.map((g) => g.name), ["Hovedingredienser", "Ponzu-saus", "Tilbehør"]);
-  eq("antall steg", r.steps.length, 6);
-  eq("Hovedingredienser-antall", r.ingredientGroups[0].items.length, 6);
-}
+  assert.deepEqual(r.ingredientGroups.map((g) => g.name), ["Hovedingredienser", "Ponzu-saus", "Tilbehør"]);
+  assert.equal(r.steps.length, 6, "antall steg");
+  assert.equal(r.ingredientGroups[0].items.length, 6, "Hovedingredienser-antall");
+});
 
-console.log("\n--------------------------------------------------");
-console.log(`RESULTAT: ${pass} bestått, ${fail} feilet`);
+test("én spalte når linjene ligger tett", () => {
+  const boxes = ["a", "b", "c"].map((text, i) => ({ text, x0: 60, x1: 500, y0: i * 40, y1: 30 + i * 40 }));
+  assert.equal(splitColumns(boxes, PAGE_W).length, 1);
+});
+
+test("tom side gir én tom spalte", () => {
+  assert.deepEqual(splitColumns([], PAGE_W), [[]]);
+});

@@ -1,5 +1,7 @@
-// test.mjs — run with: node test.mjs
-import { parseRecipe } from "./parser.mjs";
+// parser.test.mjs — de opprinnelige parser-testene, portert til node:test.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { parseRecipe, parseServings, parseTime, guessCuisine, classifyColumns } from "../js/parser.mjs";
 
 // --- Fixtures: OCR text split into columns (bullets kept as "*") -------------
 
@@ -8,7 +10,7 @@ const ramen = {
   stamp: "NUDLER OG SUPPER · JAPAN",
   metaLine: "4–5 porsjoner    40 min (20 min til å bløtlegge soppen)",
   columns: [
-    [ // ingredients column (left on this page)
+    [
       "* 600 g lårfilet av kylling",
       "* 3 ss olje til steking",
       "* 1 ts salt",
@@ -32,7 +34,7 @@ const ramen = {
       "eggnudler",
       "* Ristede sesamfrø",
     ],
-    [ // steps column (right)
+    [
       "1. Bløtlegg soppen i kokende vann i 20 minutter. Skyll den deretter",
       "i kaldt vann og klem ut vannet. Del soppen i skiver.",
       "2. Salt kyllingen og stek den i en stekepanne på middels høy varme",
@@ -51,7 +53,7 @@ const sashimi = {
   stamp: "SMÅRETTER · JAPAN",
   metaLine: "3–4 porsjoner    15 min",
   columns: [
-    [ // steps column (LEFT on this page!)
+    [
       "1. Kutt opp alle ingrediensene til salaten. Skjær laksen i terninger",
       "på ca. 1 x 1 cm. Ha alt i en bolle.",
       "2. Bland sammen ingrediensene til ponzusausen og rør til",
@@ -62,7 +64,7 @@ const sashimi = {
       "av gangen. De sveller når de stekes.",
       "6. Før servering heller du ponzusausen over salaten.",
     ],
-    [ // ingredients column (RIGHT on this page!)
+    [
       "* 400 g laks av sushikvalitet",
       "i terninger",
       "* 1 avokado i terninger",
@@ -90,7 +92,7 @@ const teriyaki = {
   stamp: "RIS- OG GRYTERETTER · JAPAN",
   metaLine: "4 porsjoner    30 min",
   columns: [
-    [ // ingredients column (left)
+    [
       "* 900 g overlår eller lårfilet",
       "av kylling , ca. 8 lår",
       "* 1 brokkoli i buketter",
@@ -105,7 +107,7 @@ const teriyaki = {
       "* 1 ss maisenna",
       "* ½ ts revet ingefær",
     ],
-    [ // steps column (right)
+    [
       "1. Fileter bort beina i overlårene hvis du kjøper med bein.",
       "2. Brokkolien kan du koke, dampe eller steke som du ønsker.",
       "3. Varm en tørr panne på middels høy varme.",
@@ -116,8 +118,6 @@ const teriyaki = {
     ],
   ],
 };
-
-// --- Expected results --------------------------------------------------------
 
 const expected = {
   RAMEN: {
@@ -137,38 +137,78 @@ const expected = {
   },
 };
 
-// --- Runner ------------------------------------------------------------------
+for (const page of [ramen, sashimi, teriyaki]) {
+  test(`parseRecipe: ${page.title}`, () => {
+    const r = parseRecipe(page);
+    const e = expected[r.title];
 
-const cases = [ramen, sashimi, teriyaki];
-let pass = 0, fail = 0;
-const fails = [];
+    assert.equal(r.cuisine, e.cuisine, "kjøkken");
+    assert.equal(r.servings, e.servings, "porsjoner");
+    assert.equal(r.timeMinutes, e.timeMinutes, "tid");
+    assert.equal(r.steps.length, e.steps, "antall steg");
 
-function check(name, label, got, want) {
-  const ok = got === want;
-  if (ok) pass++; else { fail++; fails.push(`  ✗ [${name}] ${label}: fikk ${JSON.stringify(got)}, forventet ${JSON.stringify(want)}`); }
-  return ok;
+    const got = Object.fromEntries(r.ingredientGroups.map((g) => [g.name, g.items.length]));
+    assert.deepEqual(Object.keys(got), Object.keys(e.groups), "gruppenavn");
+    for (const [name, count] of Object.entries(e.groups)) {
+      assert.equal(got[name], count, `gruppe «${name}»`);
+    }
+  });
 }
 
-for (const c of cases) {
-  const r = parseRecipe(c);
-  const e = expected[r.title];
-  console.log(`\n=== ${r.title} ===`);
-  console.log(`kjøkken: ${r.cuisine} | porsjoner: ${r.servings} | tid: ${r.timeMinutes} min | steg: ${r.steps.length}`);
-  for (const g of r.ingredientGroups) console.log(`  [${g.name}] (${g.items.length}): ${g.items.join(" | ")}`);
+test("steg beholder hele teksten når linjer brytes", () => {
+  const r = parseRecipe(ramen);
+  assert.match(r.steps[0], /Bløtlegg soppen i kokende vann i 20 minutter\. Skyll den deretter i kaldt vann/);
+});
 
-  check(r.title, "kjøkken", r.cuisine, e.cuisine);
-  check(r.title, "porsjoner", r.servings, e.servings);
-  check(r.title, "tid", r.timeMinutes, e.timeMinutes);
-  check(r.title, "antall steg", r.steps.length, e.steps);
+test("parseServings forstår entall, intervall og «personer»", () => {
+  assert.equal(parseServings("1 porsjon"), "1");
+  assert.equal(parseServings("4 porsjoner"), "4");
+  assert.equal(parseServings("4–5 porsjoner  40 min"), "4–5");
+  assert.equal(parseServings("Til 4 personer"), "4");
+  assert.equal(parseServings("For 2 pers."), "2");
+  assert.equal(parseServings("40 min"), null);
+});
 
-  const gotGroups = Object.fromEntries(r.ingredientGroups.map((g) => [g.name, g.items.length]));
-  check(r.title, "gruppenavn", JSON.stringify(Object.keys(gotGroups)), JSON.stringify(Object.keys(e.groups)));
-  for (const [gname, gcount] of Object.entries(e.groups)) {
-    check(r.title, `gruppe «${gname}» antall`, gotGroups[gname], gcount);
-  }
-}
+test("parseTime forstår timer, minutter og kombinasjoner", () => {
+  assert.equal(parseTime("40 min"), 40);
+  assert.equal(parseTime("1 time 15 min"), 75);
+  assert.equal(parseTime("ca. 1 t 15 min"), 75);
+  assert.equal(parseTime("2 timer"), 120);
+  assert.equal(parseTime("45 minutter"), 45);
+  assert.equal(parseTime("4 porsjoner"), null);
+});
 
-console.log("\n--------------------------------------------------");
-console.log(`RESULTAT: ${pass} bestått, ${fail} feilet`);
-if (fails.length) { console.log("\nFEIL:"); fails.forEach((f) => console.log(f)); }
-else console.log("Alle tester bestått ✓");
+test("guessCuisine bruker ordgrenser (ikke delstrenger)", () => {
+  // «sake» skal ikke treffe inni «saken», og «soyasaus» skal ikke telles to
+  // ganger via «soya».
+  assert.equal(guessCuisine("Vi kommer til bunns i saken med pasta og pesto"), "Italiensk");
+  assert.equal(guessCuisine("2 ss soyasaus"), "Ukjent");
+  assert.equal(guessCuisine("mirin, soyasaus og nori"), "Japansk");
+  assert.equal(guessCuisine("tortilla med jalapeño"), "Meksikansk");
+  assert.equal(guessCuisine("brød og smør"), "Ukjent");
+});
+
+test("classifyColumns takler tomme spalter uten å krasje", () => {
+  assert.deepEqual(classifyColumns([]), { ingredients: [], steps: [] });
+  assert.deepEqual(classifyColumns([[]]), { ingredients: [], steps: [] });
+});
+
+test("classifyColumns bruker ingHits når ingen spalte har nummererte steg", () => {
+  const ingredientCol = ["* 2 dl fløte", "* 1 ts salt", "* 3 egg"];
+  const proseCol = ["Visp fløten stiv.", "Bland inn eggene.", "Stek i pannen."];
+  const r = classifyColumns([ingredientCol, proseCol]);
+  assert.deepEqual(r.ingredients, ingredientCol);
+});
+
+test("én-spalters side deles i ingredienser og steg", () => {
+  const r = parseRecipe({
+    title: "PANNEKAKER",
+    metaLine: "4 porsjoner 20 min",
+    columns: [[
+      "* 3 dl mel", "* 5 dl melk", "* 3 egg",
+      "1. Bland mel og melk.", "2. Stek pannekakene.",
+    ]],
+  });
+  assert.equal(r.ingredientGroups[0].items.length, 3);
+  assert.equal(r.steps.length, 2);
+});
