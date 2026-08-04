@@ -77,14 +77,25 @@ test("flymodus: appen åpner og skanner uten nett etter første besøk", async (
   await page.goto("/index.html");
   // Vent til service workeren styrer siden …
   await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 30_000 });
-  // … og har varmet opp OCR-filene i bakgrunnen
-  await page.waitForFunction(async () => {
+  // … og har varmet opp *alle* OCR-filene i bakgrunnen. Å telle antall
+  // nøkler holder ikke: går vi offline mens oppvarmingen pågår, mangler
+  // fortsatt en av wasm-filene og skanningen henger.
+  await page.waitForFunction(async (needed) => {
     const keys = await caches.keys();
     const vendor = keys.find((k) => k.includes("vendor"));
     if (!vendor) return false;
     const cache = await caches.open(vendor);
-    return (await cache.keys()).length >= 7;
-  }, null, { timeout: 120_000 });
+    const cached = (await cache.keys()).map((r) => new URL(r.url).pathname);
+    return needed.every((n) => cached.some((p) => p.endsWith(n)));
+  }, [
+    "tesseract.min.js",
+    "worker.min.js",
+    "tesseract-core-simd-lstm.wasm.js",
+    "tesseract-core-simd-lstm.wasm",
+    "tesseract-core-lstm.wasm.js",
+    "tesseract-core-lstm.wasm",
+    "nor.traineddata.gz",
+  ], { timeout: 120_000 });
 
   await context.setOffline(true);
   // Alt serveres fra service worker-cachen; ingen nettverkskall skal trenges.
