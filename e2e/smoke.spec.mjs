@@ -74,39 +74,25 @@ test("skann → skjema → lagre → lesevisning", async ({ page }) => {
 });
 
 test("flymodus: appen åpner og skanner uten nett etter første besøk", async ({ page, context }) => {
+  const scan = async () => {
+    await page.locator("#goScan").click();
+    await page.locator("#file").setInputFiles(FIXTURE);
+    await expect(page.locator("#result")).toHaveClass(/active/, { timeout: 150_000 });
+    await expect(page.locator("#f-title")).toHaveValue(/RAMEN/i);
+  };
+
   await page.goto("/index.html");
-  // Vent til service workeren styrer siden …
   await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 30_000 });
-  // … og har varmet opp *alle* OCR-filene i bakgrunnen. Å telle antall
-  // nøkler holder ikke: går vi offline mens oppvarmingen pågår, mangler
-  // fortsatt en av wasm-filene og skanningen henger.
-  await page.waitForFunction(async (needed) => {
-    const keys = await caches.keys();
-    const vendor = keys.find((k) => k.includes("vendor"));
-    if (!vendor) return false;
-    const cache = await caches.open(vendor);
-    const cached = (await cache.keys()).map((r) => new URL(r.url).pathname);
-    return needed.every((n) => cached.some((p) => p.endsWith(n)));
-  }, [
-    "tesseract.min.js",
-    "worker.min.js",
-    "tesseract-core-simd-lstm.wasm.js",
-    "tesseract-core-simd-lstm.wasm",
-    "tesseract-core-lstm.wasm.js",
-    "tesseract-core-lstm.wasm",
-    "nor.traineddata.gz",
-  ], { timeout: 120_000 });
+
+  // Første skann med nett – service workeren legger OCR-filene i cachen.
+  await scan();
+  await page.locator("#discard").click();
 
   await context.setOffline(true);
-  // Alt serveres fra service worker-cachen; ingen nettverkskall skal trenges.
+  // Alt serveres nå fra cachen; ingen nettverkskall skal trenges.
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.locator("#list h1")).toHaveText("Oppskriftsboka");
 
-  await page.locator("#goScan").click();
-  await page.locator("#file").setInputFiles(
-    new URL("../test/fixtures/ramen.png", import.meta.url).pathname,
-  );
-  await expect(page.locator("#result")).toHaveClass(/active/, { timeout: 150_000 });
-  await expect(page.locator("#f-title")).toHaveValue(/RAMEN/i);
+  await scan();
   await context.setOffline(false);
 });
